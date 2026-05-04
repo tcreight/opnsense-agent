@@ -3,6 +3,7 @@
 This test fails CI if anything that looks like an OPNsense API key,
 SSH private key, or .env file ends up tracked in git.
 """
+
 from __future__ import annotations
 
 import re
@@ -64,9 +65,8 @@ def _is_placeholder(value: str) -> bool:
     if lowered.startswith("<") and lowered.endswith(">"):
         return True
     # Single character repeated for the entire length (e.g. 40 A's, 50 0's, xxxx...).
-    if len(value) > 0 and len(set(value)) == 1:
-        return True
-    return False
+    # set("") has length 0, so empty values are correctly not flagged as placeholders.
+    return len(set(value)) == 1
 
 
 def _git_tracked_files() -> list[Path]:
