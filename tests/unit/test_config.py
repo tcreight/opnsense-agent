@@ -48,8 +48,9 @@ def test_load_settings_from_valid_toml(tmp_path: Path) -> None:
     assert settings.runtime.backup_retention == 50
 
 
-def test_refuses_world_readable_config(tmp_path: Path) -> None:
-    cfg = _write_config(tmp_path, VALID_TOML, mode=0o644)
+@pytest.mark.parametrize("mode", [0o644, 0o640, 0o660])
+def test_refuses_insecure_config_permissions(tmp_path: Path, mode: int) -> None:
+    cfg = _write_config(tmp_path, VALID_TOML, mode=mode)
     with pytest.raises(ConfigError, match="permissions"):
         load_settings(config_path=cfg)
 

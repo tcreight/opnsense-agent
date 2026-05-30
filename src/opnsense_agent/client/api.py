@@ -26,7 +26,6 @@ class OpnApiClient:
         *,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        self._auth = auth
         self._base_url = f"https://{firewall.host}:{firewall.api_port}"
         self._client = httpx.AsyncClient(
             base_url=self._base_url,

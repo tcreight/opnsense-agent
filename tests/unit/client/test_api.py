@@ -26,7 +26,6 @@ def auth() -> AuthSettings:
     return AuthSettings(api_key="THE_KEY_VALUE", api_secret="THE_SECRET_VALUE")
 
 
-@pytest.mark.asyncio
 async def test_get_returns_parsed_json(firewall: FirewallSettings, auth: AuthSettings) -> None:
     transport = httpx.MockTransport(lambda req: httpx.Response(200, json={"status": "ok"}))
     client = OpnApiClient(firewall=firewall, auth=auth, transport=transport)
@@ -35,7 +34,6 @@ async def test_get_returns_parsed_json(firewall: FirewallSettings, auth: AuthSet
     await client.close()
 
 
-@pytest.mark.asyncio
 async def test_post_sends_basic_auth_header(firewall: FirewallSettings, auth: AuthSettings) -> None:
     captured: dict[str, str] = {}
 
@@ -50,7 +48,6 @@ async def test_post_sends_basic_auth_header(firewall: FirewallSettings, auth: Au
     await client.close()
 
 
-@pytest.mark.asyncio
 async def test_logs_redact_secrets(
     firewall: FirewallSettings,
     auth: AuthSettings,
@@ -66,7 +63,6 @@ async def test_logs_redact_secrets(
     await client.close()
 
 
-@pytest.mark.asyncio
 async def test_raises_on_non_2xx(firewall: FirewallSettings, auth: AuthSettings) -> None:
     transport = httpx.MockTransport(
         lambda req: httpx.Response(401, json={"message": "unauthorized"})

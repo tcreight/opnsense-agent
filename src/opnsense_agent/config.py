@@ -87,6 +87,7 @@ def _coerce_int(value: Any) -> int:
 
 
 def _apply_env(data: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    data = {section: dict(vals) for section, vals in data.items()}
     for env_key, (section, key) in _ENV_MAP.items():
         if env_key in os.environ:
             data.setdefault(section, {})[key] = os.environ[env_key]
@@ -136,7 +137,9 @@ def load_settings(config_path: Path | None = None) -> Settings:
         )
         safety = SafetySettings(
             require_confirm_phrase=data["safety"].get("require_confirm_phrase", "yes apply"),
-            allow_lockout_override=_coerce_bool(data["safety"].get("allow_lockout_override", True)),
+            allow_lockout_override=_coerce_bool(
+                data["safety"].get("allow_lockout_override", False)
+            ),
         )
     except KeyError as e:
         raise ConfigError(f"Missing required config key: {e}") from e
