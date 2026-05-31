@@ -1,9 +1,24 @@
-"""Op handler protocol, registry, and the plan apply pipeline."""
+"""Op handler protocol, registry, and the plan apply pipeline.
+
+CHOKEPOINT INVARIANT
+--------------------
+All mutating interactions with the OPNsense firewall MUST funnel through
+``PlanApplyPipeline.apply()``. No other code path may call
+``OpnApiClient.post()`` to mutate config, nor invoke an ``OpHandler``
+directly. The pipeline owns lockout-checking, backup-then-restore, and
+audit logging — bypassing it loses those guarantees.
+
+If you need a new mutation path (slash command, MCP tool, CLI), wire it
+to construct a ``Plan`` and call ``PlanApplyPipeline.apply()``. Do not
+add a parallel mutation route.
+
+Reads (``api.get``, SSH diagnostic commands) are unrestricted.
+"""
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
@@ -21,6 +36,22 @@ logger = logging.getLogger(__name__)
 
 class UnknownOpError(Exception):
     """Raised when no handler is registered for a given op type."""
+
+
+class LockoutCheckFailedError(Exception):
+    """Raised by the apply pipeline when a plan triggers one or more lockout
+    warnings and the caller did not opt in to overriding them.
+
+    Carries the full list of ``LockoutWarning`` records so the caller can
+    present them to the operator before retrying with ``override_lockout=True``.
+    """
+
+    def __init__(self, warnings: Sequence[lockout.LockoutWarning]) -> None:
+        self.warnings: list[lockout.LockoutWarning] = list(warnings)
+        super().__init__(
+            f"Plan triggered {len(self.warnings)} lockout warning(s); "
+            "pass override_lockout=True to apply anyway."
+        )
 
 
 @dataclass(frozen=True)
@@ -79,11 +110,20 @@ class PlanApplyPipeline:
     """The single chokepoint for all mutations.
 
     Pipeline:
-      1. Lockout check (warnings -> require override or fail)
+      1. Lockout check (warnings -> raise LockoutCheckFailedError unless overridden)
       2. Backup
-      3. Sequential op execution (stop on first failure)
+      3. Sequential op execution (stop on first failure; handler exceptions
+         are caught and treated as op failures)
       4. Reachability probe
-      5. Finalize plan status; on failure or probe failure, restore backup
+      5. Finalize plan status; on op failure or probe failure, restore backup
+         (catastrophic restore failures are themselves caught and recorded
+         in rollback_reason rather than escaping the pipeline)
+      6. Audit log line written for every terminal state (applied, failed,
+         rolled_back)
+
+    Defaults to fail-closed: ``allow_lockout_override=False`` means even an
+    explicit ``override_lockout=True`` from the caller is rejected with
+    ``PermissionError``. Set ``True`` only when the safety config opts in.
     """
 
     def __init__(
@@ -97,7 +137,7 @@ class PlanApplyPipeline:
         probe: Callable[..., Awaitable[bool]],
         self_ip: str,
         management_if: str,
-        allow_lockout_override: bool = True,
+        allow_lockout_override: bool = False,
     ) -> None:
         self._store = store
         self._registry = registry
@@ -131,21 +171,14 @@ class PlanApplyPipeline:
         warnings = lockout.check_plan(
             plan, self_ip=self._self_ip, management_if=self._management_if
         )
-        if warnings and not override_lockout:
+        if warnings:
+            if not override_lockout:
+                raise LockoutCheckFailedError(warnings)
             if not self._allow_lockout_override:
                 raise PermissionError(
                     f"Lockout check produced {len(warnings)} warning(s) and override "
-                    "is disabled in safety config."
+                    "is disabled in safety config (allow_lockout_override=False)."
                 )
-            return PlanApplyResult(
-                plan_id=plan.plan_id,
-                status=PlanStatus.draft,
-                backup_id=None,
-                rollback_reason=(
-                    f"Lockout warnings: {[w.message for w in warnings]} (override required)"
-                ),
-                op_results=[],
-            )
 
         backup_id = await self._backup.create(api=self._api, label=f"pre-apply-{plan.plan_id}")
 
@@ -154,8 +187,7 @@ class PlanApplyPipeline:
         had_failure = False
 
         for op in plan.ops:
-            handler = self._registry.get(op.op)
-            result = await handler.execute(op, ctx)
+            result = await self._execute_one_op(op, ctx)
             results.append(result)
             if result.status != "ok":
                 had_failure = True
@@ -163,64 +195,92 @@ class PlanApplyPipeline:
                 break
 
         if had_failure:
-            await self._backup.restore(api=self._api, backup_id=backup_id)
-            final = plan.model_copy(
-                update={
-                    "status": PlanStatus.failed,
-                    "execution": plan.execution.model_copy(
-                        update={
-                            "backup_id": backup_id,
-                            "applied_at": datetime.now(UTC),
-                            "results": results,
-                            "rollback_reason": "op execution failed",
-                        }
-                    ),
-                }
-            )
-            self._store.finalize(final)
-            return PlanApplyResult(
-                plan_id=plan.plan_id,
+            rollback_reason = await self._safe_restore(backup_id, base_reason="op execution failed")
+            return self._finalize_and_audit(
+                plan=plan,
                 status=PlanStatus.failed,
                 backup_id=backup_id,
-                rollback_reason="op execution failed",
-                op_results=results,
+                rollback_reason=rollback_reason,
+                results=results,
             )
 
         probe_ok = await self._probe(api=self._api)
         if not probe_ok:
-            await self._backup.restore(api=self._api, backup_id=backup_id)
-            final = plan.model_copy(
-                update={
-                    "status": PlanStatus.rolled_back,
-                    "execution": plan.execution.model_copy(
-                        update={
-                            "backup_id": backup_id,
-                            "applied_at": datetime.now(UTC),
-                            "results": results,
-                            "rollback_reason": "post-apply reachability probe failed",
-                        }
-                    ),
-                }
+            rollback_reason = await self._safe_restore(
+                backup_id, base_reason="post-apply reachability probe failed"
             )
-            self._store.finalize(final)
-            return PlanApplyResult(
-                plan_id=plan.plan_id,
+            return self._finalize_and_audit(
+                plan=plan,
                 status=PlanStatus.rolled_back,
                 backup_id=backup_id,
-                rollback_reason="post-apply reachability probe failed",
-                op_results=results,
+                rollback_reason=rollback_reason,
+                results=results,
             )
 
+        return self._finalize_and_audit(
+            plan=plan,
+            status=PlanStatus.applied,
+            backup_id=backup_id,
+            rollback_reason=None,
+            results=results,
+        )
+
+    async def _execute_one_op(self, op: PlanOp, ctx: HandlerContext) -> OpResult:
+        """Run a single op handler with full exception containment.
+
+        An uncaught exception inside a handler (or an unknown op type) would
+        otherwise escape apply() and leave the plan stuck in draft with no
+        rollback and no audit entry. We synthesize an OpResult instead so the
+        normal failure-then-rollback path runs.
+        """
+        try:
+            handler = self._registry.get(op.op)
+        except UnknownOpError as e:
+            return OpResult(op=op.op, status="error", error=str(e))
+        try:
+            return await handler.execute(op, ctx)
+        except Exception as e:  # noqa: BLE001 — handlers are external code
+            logger.exception("Handler raised for op %s", op.op)
+            return OpResult(op=op.op, status="error", error=f"handler raised: {e}")
+
+    async def _safe_restore(self, backup_id: str, *, base_reason: str) -> str:
+        """Attempt backup restore; never raise.
+
+        If restore itself fails, augment the rollback reason so the operator
+        knows the firewall may be in an inconsistent state and the prior
+        config XML is available at ``runs/backups/<backup_id>.xml`` for
+        manual recovery.
+        """
+        try:
+            await self._backup.restore(api=self._api, backup_id=backup_id)
+            return base_reason
+        except Exception as e:  # noqa: BLE001
+            logger.exception("Backup restore FAILED for backup_id=%s", backup_id)
+            return (
+                f"{base_reason}; backup restore ALSO failed: {e}. "
+                f"Prior config preserved at runs/backups/{backup_id}.xml"
+            )
+
+    def _finalize_and_audit(
+        self,
+        *,
+        plan,  # type: ignore[no-untyped-def] — Pydantic Plan; inline-typed to avoid module-level Plan import
+        status: PlanStatus,
+        backup_id: str | None,
+        rollback_reason: str | None,
+        results: list[OpResult],
+    ) -> PlanApplyResult:
+        exec_update: dict[str, object] = {
+            "backup_id": backup_id,
+            "applied_at": datetime.now(UTC),
+            "results": results,
+        }
+        if rollback_reason is not None:
+            exec_update["rollback_reason"] = rollback_reason
         final = plan.model_copy(
             update={
-                "status": PlanStatus.applied,
-                "execution": plan.execution.model_copy(
-                    update={
-                        "backup_id": backup_id,
-                        "applied_at": datetime.now(UTC),
-                        "results": results,
-                    }
-                ),
+                "status": status,
+                "execution": plan.execution.model_copy(update=exec_update),
             }
         )
         self._store.finalize(final)
@@ -228,13 +288,14 @@ class PlanApplyPipeline:
             plan_id=plan.plan_id,
             action="apply",
             backup_id=backup_id,
-            status=PlanStatus.applied,
+            status=status,
+            rollback_reason=rollback_reason,
         )
         return PlanApplyResult(
             plan_id=plan.plan_id,
-            status=PlanStatus.applied,
+            status=status,
             backup_id=backup_id,
-            rollback_reason=None,
+            rollback_reason=rollback_reason,
             op_results=results,
         )
 
@@ -245,12 +306,21 @@ class PlanApplyPipeline:
         action: str,
         backup_id: str | None,
         status: PlanStatus,
+        rollback_reason: str | None = None,
     ) -> None:
         audit_path = self._store.runs_dir / "audit.log"
-        line = (
-            f"{datetime.now(UTC).isoformat()} "
-            f"action={action} plan_id={plan_id} backup_id={backup_id} "
-            f"status={status.value}\n"
-        )
+        parts = [
+            datetime.now(UTC).isoformat(),
+            f"action={action}",
+            f"plan_id={plan_id}",
+            f"backup_id={backup_id}",
+            f"status={status.value}",
+        ]
+        if rollback_reason:
+            # Quote and replace embedded quotes/newlines so a single audit line
+            # stays a single grep-friendly line. Not a JSON document — just
+            # enough escaping to survive operator tooling.
+            escaped = rollback_reason.replace('"', "'").replace("\n", " ")
+            parts.append(f'rollback_reason="{escaped}"')
         with audit_path.open("a") as f:
-            f.write(line)
+            f.write(" ".join(parts) + "\n")
