@@ -44,6 +44,11 @@ target-version = "py312"
 select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "T20", "RET", "SIM"]
 ignore = ["E501"]  # line length handled by formatter
 
+[tool.ruff.lint.per-file-ignores]
+# Test names often mirror OPNsense REST endpoints (addItem, setItem, delItem),
+# whose camelCase is semantically meaningful — not a Python naming slip.
+"tests/**/test_*.py" = ["N802"]
+
 [tool.pyright]
 include = ["src", "tests"]
 pythonVersion = "3.12"

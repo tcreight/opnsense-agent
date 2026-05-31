@@ -10,7 +10,7 @@ from opnsense_agent.plans.schema import PlanOp
 
 
 @pytest.mark.asyncio
-async def test_vlan_create_calls_addItem_then_reconfigure() -> None:  # noqa: N802
+async def test_vlan_create_calls_addItem_then_reconfigure() -> None:
     api = AsyncMock()
     api.post.side_effect = [
         {"result": "saved", "uuid": "vlan-uuid-1"},  # addItem
@@ -35,7 +35,7 @@ async def test_vlan_create_calls_addItem_then_reconfigure() -> None:  # noqa: N8
 
 
 @pytest.mark.asyncio
-async def test_vlan_create_handles_addItem_failure() -> None:  # noqa: N802
+async def test_vlan_create_handles_addItem_failure() -> None:
     api = AsyncMock()
     api.post.side_effect = [
         {"result": "failed", "validations": {"vlan.tag": "invalid"}},
