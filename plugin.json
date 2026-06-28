@@ -1,0 +1,8 @@
+{
+  "name": "opnsense-agent",
+  "version": "0.1.0",
+  "description": "Manage a single OPNsense firewall via plan-then-apply workflow",
+  "author": "Tyler Creighton",
+  "license": "MIT",
+  "homepage": "https://github.com/tcreight/opnsense-agent"
+}

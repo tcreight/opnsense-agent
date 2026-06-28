@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "opnsense-agent": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/.venv/bin/opnsense-agent-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
