@@ -32,6 +32,7 @@ dev = [
 
 [project.scripts]
 opnsense-agent = "opnsense_agent.cli:main"
+opnsense-agent-mcp = "opnsense_agent.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
