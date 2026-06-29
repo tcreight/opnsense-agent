@@ -84,7 +84,13 @@ reachability_probe_interval = 3
 require_confirm_phrase = "yes apply"
 allow_lockout_override = true
 """
-    target.write_text(content)
+    # Create the file already at 0600 so the api_key/api_secret never touch
+    # disk in a world-readable file, even briefly. os.open applies the mode
+    # only on creation; the trailing chmod tightens an overwritten file whose
+    # existing (looser) permissions O_TRUNC would otherwise preserve.
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(content)
     target.chmod(0o600)
     click.secho(f"Wrote {target} (0600).", fg="green")
     click.echo("Run `opnsense-agent doctor` to verify connectivity.")
