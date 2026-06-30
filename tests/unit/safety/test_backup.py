@@ -54,3 +54,22 @@ async def test_restore_posts_xml(store: BackupStore) -> None:
     fake_api.post.return_value = {"status": "ok"}
     await store.restore(api=fake_api, backup_id=backup_id)
     assert fake_api.post.called
+
+
+async def test_fetch_current_xml_returns_config_text(store: BackupStore) -> None:
+    fake_api = AsyncMock()
+    fake_api.get.return_value = "<opnsense><a/></opnsense>"
+    xml = await store.fetch_current_xml(api=fake_api)
+    assert xml == "<opnsense><a/></opnsense>"
+
+
+async def test_read_xml_round_trips_a_created_backup(store: BackupStore) -> None:
+    fake_api = AsyncMock()
+    fake_api.get.return_value = "<opnsense><b>1</b></opnsense>"
+    backup_id = await store.create(api=fake_api)
+    assert store.read_xml(backup_id) == "<opnsense><b>1</b></opnsense>"
+
+
+def test_read_xml_unknown_id_raises(store: BackupStore) -> None:
+    with pytest.raises(FileNotFoundError):
+        store.read_xml("does-not-exist")

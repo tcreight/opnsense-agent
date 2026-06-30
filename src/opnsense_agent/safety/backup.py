@@ -33,9 +33,13 @@ class BackupStore:
         self.retention = retention
         (runs_dir / "backups").mkdir(parents=True, exist_ok=True)
 
-    async def create(self, api: OpnApiClient, label: str | None = None) -> str:
+    async def fetch_current_xml(self, api: OpnApiClient) -> str:
+        """Pull the live config.xml as text. Shared by create() and config diffs."""
         raw: Any = await api.get(DOWNLOAD_PATH)  # type: ignore[arg-type]
-        xml_text = raw if isinstance(raw, str) else raw.get("data", "")
+        return raw if isinstance(raw, str) else raw.get("data", "")
+
+    async def create(self, api: OpnApiClient, label: str | None = None) -> str:
+        xml_text = await self.fetch_current_xml(api)
         ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         suffix = f"-{label}" if label else ""
         backup_id = f"{ts}{suffix}"
@@ -43,6 +47,13 @@ class BackupStore:
         path.write_text(xml_text)
         logger.info("Backup created: %s", backup_id)
         return backup_id
+
+    def read_xml(self, backup_id: str) -> str:
+        """Read a stored backup's config.xml. Raises FileNotFoundError if absent."""
+        path = self.runs_dir / "backups" / f"{backup_id}.xml"
+        if not path.exists():
+            raise FileNotFoundError(f"Backup not found: {backup_id}")
+        return path.read_text()
 
     def list(self) -> list[BackupRecord]:
         records: list[BackupRecord] = []
