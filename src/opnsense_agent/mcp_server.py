@@ -34,6 +34,7 @@ from opnsense_agent.plans.handlers.vlan import VlanCreateHandler
 from opnsense_agent.plans.schema import Plan
 from opnsense_agent.plans.store import PlanStore
 from opnsense_agent.safety.backup import BackupStore
+from opnsense_agent.safety.diff import diff_config_xml
 from opnsense_agent.safety.lockout import check_plan as lockout_check_plan
 from opnsense_agent.safety.probe import reachability_probe
 
@@ -230,7 +231,19 @@ async def _dispatch(
         return {"status": "restored", "backup_id": args["backup_id"]}
 
     if name == "opn_config_diff":
-        return "config_diff: not yet implemented in v1; track in a follow-up."
+        # backup_id_a is the restore TARGET; baseline is backup_id_b or live config.
+        # diff(baseline -> target) reads as "what restoring backup_id_a would do".
+        target_id = args["backup_id_a"]
+        target_xml = backup.read_xml(target_id)
+        baseline_id = args.get("backup_id_b")
+        if baseline_id:
+            baseline_xml = backup.read_xml(baseline_id)
+            from_label, to_label = f"backup {baseline_id}", f"backup {target_id}"
+        else:
+            baseline_xml = await backup.fetch_current_xml(api)
+            from_label, to_label = "current", f"backup {target_id}"
+        diff = diff_config_xml(baseline_xml, target_xml)
+        return diff.render(from_label=from_label, to_label=to_label)
 
     if name == "opn_plan_save":
         plan = Plan.model_validate(yaml.safe_load(args["plan_yaml"]))

@@ -70,3 +70,34 @@ def test_no_opn_api_post_tool_exists(settings: Settings) -> None:
     server = build_server(settings=settings)
     names = {t.name for t in list_registered_tools(server)}
     assert "opn_api_post" not in names
+
+
+async def test_dispatch_config_diff_vs_current(tmp_path: Path) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from opnsense_agent.mcp_server import _dispatch  # pyright: ignore[reportPrivateUsage]
+    from opnsense_agent.safety.backup import BackupStore
+
+    store = BackupStore(runs_dir=tmp_path, retention=10)
+    api = AsyncMock()
+    # Backup snapshot: sysctl value 0.
+    api.get.return_value = "<opnsense><sysctl><item><value>0</value></item></sysctl></opnsense>"
+    backup_id = await store.create(api=api)
+    # Live config now: sysctl value 1.
+    api.get.return_value = "<opnsense><sysctl><item><value>1</value></item></sysctl></opnsense>"
+
+    out = await _dispatch(
+        "opn_config_diff",
+        {"backup_id_a": backup_id},
+        api=api,
+        ssh=MagicMock(),
+        backup=store,
+        plan_store=MagicMock(),
+        pipeline=MagicMock(),
+        self_ip="0.0.0.0",
+        management_if="igb0",
+    )
+
+    # baseline=current (value 1) -> target=backup (value 0): restoring reverts 1 -> 0.
+    assert out.splitlines()[0].startswith("Changes from current to backup ")
+    assert "sysctl/item/value: 1 -> 0" in out

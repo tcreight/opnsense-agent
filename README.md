@@ -156,6 +156,11 @@ Quick summary:
 - Plan files become 0444 (immutable) once a plan transitions out of `draft`
 - Auto-rollback on op failure or post-apply reachability failure
 - Manual `/opn-rollback` always available
+- `opn_config_diff` parses `config.xml` with the standard-library
+  `xml.etree.ElementTree`. This is a deliberate zero-dependency choice: the
+  input is our own firewall's config (no DTDs/entities), fetched over
+  authenticated TLS or read from a file we wrote. If you ever diff configs from
+  an untrusted source, switch to the hardened `defusedxml` package.
 
 See spec section 10 for the full six-layer safety stack.
 
