@@ -38,3 +38,7 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# === Local agent tooling / generated artifacts ===
+.claude/
+graphify-out/
