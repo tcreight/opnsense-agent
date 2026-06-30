@@ -44,7 +44,7 @@ class PlanExecution(BaseModel):
 
     backup_id: str | None = None
     applied_at: datetime | None = None
-    results: list[OpResult] = Field(default_factory=list)
+    results: list[OpResult] = Field(default_factory=list[OpResult])
     rollback_reason: str | None = None
 
 

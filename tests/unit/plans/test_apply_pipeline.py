@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -7,10 +8,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from opnsense_agent.plans.engine import (
+    HandlerContext,
     LockoutCheckFailedError,
     OpHandlerRegistry,
     PlanApplyPipeline,
     PlanApplyResult,
+    _BackupProto,  # pyright: ignore[reportPrivateUsage] — test references the pipeline's backup contract
 )
 from opnsense_agent.plans.schema import (
     OpResult,
@@ -35,21 +38,21 @@ def _plan(ops: list[PlanOp] | None = None) -> Plan:
 class _OkHandler:
     op_type = "vlan.create"
 
-    async def execute(self, op, ctx):  # type: ignore[no-untyped-def]
+    async def execute(self, op: PlanOp, ctx: HandlerContext) -> OpResult:
         return OpResult(op=op.op, status="ok", response={"r": 1})
 
 
 class _FailHandler:
     op_type = "vlan.create"
 
-    async def execute(self, op, ctx):  # type: ignore[no-untyped-def]
+    async def execute(self, op: PlanOp, ctx: HandlerContext) -> OpResult:
         return OpResult(op=op.op, status="error", error="boom")
 
 
 class _RaisingHandler:
     op_type = "vlan.create"
 
-    async def execute(self, op, ctx):  # type: ignore[no-untyped-def]
+    async def execute(self, op: PlanOp, ctx: HandlerContext) -> OpResult:
         raise RuntimeError("handler exploded")
 
 
@@ -58,7 +61,7 @@ class _ServiceDisableOkHandler:
 
     op_type = "service.disable"
 
-    async def execute(self, op, ctx):  # type: ignore[no-untyped-def]
+    async def execute(self, op: PlanOp, ctx: HandlerContext) -> OpResult:
         return OpResult(op=op.op, status="ok")
 
 
@@ -73,8 +76,8 @@ def _make_pipeline(
     *,
     store: PlanStore,
     registry: OpHandlerRegistry,
-    backup,
-    probe,
+    backup: _BackupProto,
+    probe: Callable[..., Awaitable[bool]],
     allow_lockout_override: bool = False,
 ) -> PlanApplyPipeline:
     return PlanApplyPipeline(

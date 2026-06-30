@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from opnsense_agent.plans.schema import OpResult, PlanOp, PlanStatus
+from opnsense_agent.plans.schema import OpResult, Plan, PlanOp, PlanStatus
 from opnsense_agent.plans.store import PlanStore
 from opnsense_agent.safety import lockout
 
@@ -264,7 +264,7 @@ class PlanApplyPipeline:
     def _finalize_and_audit(
         self,
         *,
-        plan,  # type: ignore[no-untyped-def] — Pydantic Plan; inline-typed to avoid module-level Plan import
+        plan: Plan,
         status: PlanStatus,
         backup_id: str | None,
         rollback_reason: str | None,
