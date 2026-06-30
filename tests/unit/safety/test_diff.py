@@ -67,3 +67,50 @@ def test_explicit_ignore_paths_overrides_default() -> None:
     # With no paths ignored the revision/time change must appear in changed.
     assert not diff.is_empty
     assert any(c.path == "revision/time" for c in diff.changed)
+
+
+def test_uuid_keyed_modify_is_change_not_add_remove_even_when_reordered() -> None:
+    a = (
+        "<opnsense><vlans>"
+        '<vlan uuid="u1"><descr>one</descr></vlan>'
+        '<vlan uuid="u2"><descr>two</descr></vlan>'
+        "</vlans></opnsense>"
+    )
+    # Reordered AND u2's descr changed.
+    b = (
+        "<opnsense><vlans>"
+        '<vlan uuid="u2"><descr>TWO</descr></vlan>'
+        '<vlan uuid="u1"><descr>one</descr></vlan>'
+        "</vlans></opnsense>"
+    )
+    diff = diff_config_xml(a, b)
+    assert not diff.added and not diff.removed
+    assert [(c.path, c.old, c.new) for c in diff.changed] == [
+        ("vlans/vlan[u2]/descr", "two", "TWO")
+    ]
+
+
+def test_identifying_child_keying_uses_tag() -> None:
+    a = (
+        "<opnsense><vlans>"
+        "<vlan><tag>30</tag><descr>iot</descr></vlan>"
+        "<vlan><tag>40</tag><descr>cam</descr></vlan>"
+        "</vlans></opnsense>"
+    )
+    b = (
+        "<opnsense><vlans>"
+        "<vlan><tag>30</tag><descr>IOT</descr></vlan>"
+        "<vlan><tag>40</tag><descr>cam</descr></vlan>"
+        "</vlans></opnsense>"
+    )
+    diff = diff_config_xml(a, b)
+    assert [(c.path, c.old, c.new) for c in diff.changed] == [
+        ("vlans/vlan[tag=30]/descr", "iot", "IOT")
+    ]
+
+
+def test_positional_fallback_when_no_identity() -> None:
+    a = "<opnsense><s><item><x>a</x></item><item><x>b</x></item></s></opnsense>"
+    b = "<opnsense><s><item><x>a</x></item><item><x>c</x></item></s></opnsense>"
+    diff = diff_config_xml(a, b)
+    assert [c.path for c in diff.changed] == ["s/item[#1]/x"]

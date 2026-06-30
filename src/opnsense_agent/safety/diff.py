@@ -26,6 +26,13 @@ from opnsense_agent.config import ConfigError
 # real config deltas, not bookkeeping noise.
 DEFAULT_IGNORES: frozenset[str] = frozenset({"revision"})
 
+# For multiple same-tag siblings, identify each by its uuid attribute, else by
+# the text of the first present child in this list, else by position. Order
+# matters: STABLE identifiers first, mutable labels last. Keying on a field that
+# can change (e.g. descr) would make an edit to that field look like a
+# remove+add instead of an in-place change, so descr is the last resort.
+_IDENTIFYING_CHILDREN: tuple[str, ...] = ("tag", "mac", "name", "if", "descr")
+
 
 @dataclass(frozen=True)
 class Change:
@@ -82,8 +89,19 @@ def _parse(xml: str, side: str) -> Element:
 def _identity(child: Element, idx: int) -> str:
     """Stable identity for one of several same-tag siblings.
 
-    Task 2: positional only. Task 3 upgrades this to uuid / identifying-child.
+    Preference: uuid attribute (bare value) -> first identifying child
+    ("<tag>=<value>") -> positional ("#idx"). The bare-vs-"tag=" distinction
+    keeps uuid keys terse while making child-derived keys self-describing.
     """
+    uuid = child.get("uuid")
+    if uuid:
+        return uuid
+    for tag in _IDENTIFYING_CHILDREN:
+        el = child.find(tag)
+        if el is not None:
+            text = (el.text or "").strip()
+            if text:
+                return f"{tag}={text}"
     return f"#{idx}"
 
 
