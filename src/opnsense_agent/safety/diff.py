@@ -117,6 +117,10 @@ def _key_map(
 
 def _diff_pair(a: Element, b: Element, path: str, ignore: frozenset[str], acc: _Acc) -> None:
     """Compare two already-matched elements at `path`."""
+    # If one side is a leaf and the other has children, we recurse
+    # structurally; the leaf side's text is not captured. Known, accepted
+    # v1 limitation — OPNsense config.xml does not mix leaf-vs-element
+    # variants of the same tag.
     if len(a) or len(b):
         _diff_children(a, b, path, ignore, acc)
     else:

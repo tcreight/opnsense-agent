@@ -57,3 +57,13 @@ def test_render_summary_line_and_markers() -> None:
 def test_malformed_xml_raises_config_error() -> None:
     with pytest.raises(ConfigError):
         diff_config_xml("<not-closed>", "<opnsense/>")
+
+
+def test_explicit_ignore_paths_overrides_default() -> None:
+    """Passing ignore_paths=frozenset() means revision changes ARE reported."""
+    a = "<opnsense><revision><time>1</time></revision><x>a</x></opnsense>"
+    b = "<opnsense><revision><time>2</time></revision><x>a</x></opnsense>"
+    diff = diff_config_xml(a, b, ignore_paths=frozenset())
+    # With no paths ignored the revision/time change must appear in changed.
+    assert not diff.is_empty
+    assert any(c.path == "revision/time" for c in diff.changed)
