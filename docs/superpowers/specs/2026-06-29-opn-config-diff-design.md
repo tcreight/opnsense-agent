@@ -126,6 +126,14 @@ Recursive compare of a node's children:
       can change (e.g. `descr`) would make an edit to that field look like a
       remove+add instead of an in-place change, so `descr` is the last resort;
    c. else positional index (documented fallback).
+   d. **Collision guard:** if two siblings on one side resolve to the *same*
+      key (no `uuid` and identical identifying-child text, e.g. two `<rule>`
+      both `<descr>web</descr>`), the colliding key gets the positional index
+      appended (`descr=web#1`). Without this, the second sibling would
+      overwrite the first in the match map and vanish from the diff — which in
+      the rollback flow could hide a *removal*, the unsafe direction for a
+      pre-restore safety diff. `idx` is deterministic per side, so both sides
+      disambiguate identically and genuine matches still match.
    Match A-children to B-children by key.
 3. **Matched pairs recurse.** A leaf whose text differs → a `changed` entry
    `~ path: old -> new`. A child present on only one side → `added`/`removed` of
