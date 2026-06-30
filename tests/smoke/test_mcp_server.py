@@ -101,3 +101,35 @@ async def test_dispatch_config_diff_vs_current(tmp_path: Path) -> None:
     # baseline=current (value 1) -> target=backup (value 0): restoring reverts 1 -> 0.
     assert out.splitlines()[0].startswith("Changes from current to backup ")
     assert "sysctl/item/value: 1 -> 0" in out
+
+
+async def test_dispatch_config_diff_backup_vs_backup(tmp_path: Path) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from opnsense_agent.mcp_server import _dispatch  # pyright: ignore[reportPrivateUsage]
+    from opnsense_agent.safety.backup import BackupStore
+
+    store = BackupStore(runs_dir=tmp_path, retention=10)
+    api = AsyncMock()
+    # baseline backup (backup_id_b): sysctl value 0.
+    api.get.return_value = "<opnsense><sysctl><item><value>0</value></item></sysctl></opnsense>"
+    baseline_id = await store.create(api=api)
+    # target backup (backup_id_a): sysctl value 1.
+    api.get.return_value = "<opnsense><sysctl><item><value>1</value></item></sysctl></opnsense>"
+    target_id = await store.create(api=api)
+
+    out = await _dispatch(
+        "opn_config_diff",
+        {"backup_id_a": target_id, "backup_id_b": baseline_id},
+        api=api,
+        ssh=MagicMock(),
+        backup=store,
+        plan_store=MagicMock(),
+        pipeline=MagicMock(),
+        self_ip="0.0.0.0",
+        management_if="igb0",
+    )
+
+    # baseline=backup_id_b (value 0) -> target=backup_id_a (value 1).
+    assert out.splitlines()[0] == f"Changes from backup {baseline_id} to backup {target_id}:"
+    assert "sysctl/item/value: 0 -> 1" in out

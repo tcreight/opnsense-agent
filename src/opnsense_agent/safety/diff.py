@@ -127,6 +127,13 @@ def _key_map(
         per_tag_index[tag] += 1
         if a_count[tag] > 1 or b_count[tag] > 1:
             ident = _identity(child, idx)
+            # Collision guard: two siblings with no uuid and identical identifying-child
+            # text (e.g. two <rule> both with <descr>web</descr>) would overwrite each
+            # other in the dict, silently hiding one from the diff so a removal goes
+            # unreported. Append the positional index to keep keys distinct; idx is
+            # deterministic per side, so matching elements still align across A and B.
+            if (tag, ident) in result:
+                ident = f"{ident}#{idx}"
             result[(tag, ident)] = (f"{tag}[{ident}]", child)
         else:
             result[(tag, None)] = (tag, child)

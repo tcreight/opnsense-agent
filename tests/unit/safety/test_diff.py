@@ -114,3 +114,22 @@ def test_positional_fallback_when_no_identity() -> None:
     b = "<opnsense><s><item><x>a</x></item><item><x>c</x></item></s></opnsense>"
     diff = diff_config_xml(a, b)
     assert [c.path for c in diff.changed] == ["s/item[#1]/x"]
+
+
+def test_duplicate_identity_siblings_do_not_swallow_each_other() -> None:
+    # Two rules with identical <descr> and no uuid. Removing the second must be
+    # reported as a removal, not silently overwritten by identity collision.
+    # BEFORE the fix: second rule's key overwrote the first in _key_map, so the
+    # diff matched the second rule (port=443) against the surviving rule (port=80)
+    # and reported a spurious port change instead of a removal.
+    a = (
+        "<opnsense><filter>"
+        "<rule><descr>web</descr><port>80</port></rule>"
+        "<rule><descr>web</descr><port>443</port></rule>"
+        "</filter></opnsense>"
+    )
+    b = "<opnsense><filter><rule><descr>web</descr><port>80</port></rule></filter></opnsense>"
+    diff = diff_config_xml(a, b)
+    assert diff.added == []
+    assert diff.changed == []
+    assert [c.path for c in diff.removed] == ["filter/rule[descr=web#1]"]
