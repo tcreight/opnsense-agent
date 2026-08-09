@@ -17,6 +17,7 @@ Reads (``api.get``, SSH diagnostic commands) are unrestricted.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -36,6 +37,15 @@ logger = logging.getLogger(__name__)
 
 class UnknownOpError(Exception):
     """Raised when no handler is registered for a given op type."""
+
+
+class ApplyInProgressError(Exception):
+    """Raised when apply() is called while another mutation holds the lock.
+
+    Fail-fast instead of queueing: a silently queued apply would block past
+    the MCP client's tool timeout and then mutate state its caller never
+    previewed (the running apply changes the config underneath it).
+    """
 
 
 class LockoutCheckFailedError(Exception):
@@ -148,6 +158,19 @@ class PlanApplyPipeline:
         self._self_ip = self_ip
         self._management_if = management_if
         self._allow_lockout_override = allow_lockout_override
+        # The MCP server is async: concurrent opn_plan_apply tool calls could
+        # interleave backup/op/probe/rollback steps, so applies are serialized.
+        self._apply_lock = asyncio.Lock()
+
+    @property
+    def mutation_lock(self) -> asyncio.Lock:
+        """The lock serializing ALL config mutations.
+
+        apply() holds it for its full duration; the MCP server's manual
+        backup-restore path acquires it too, so a restore can never interleave
+        with an in-flight apply.
+        """
+        return self._apply_lock
 
     async def apply(
         self,
@@ -155,6 +178,27 @@ class PlanApplyPipeline:
         *,
         confirm: bool,
         override_lockout: bool = False,
+    ) -> PlanApplyResult:
+        # Fail fast rather than queue: locked() then acquire is racy in
+        # general, but the async-with below still serializes correctly — the
+        # check only exists to reject the common case with a clear error.
+        if self._apply_lock.locked():
+            raise ApplyInProgressError(
+                "Another apply or restore is in progress; retry after it completes."
+            )
+        # Hold the lock for the entire apply so two concurrent applies can
+        # never interleave their backup/op/probe/rollback steps.
+        async with self._apply_lock:
+            return await self._apply_locked(
+                plan_id, confirm=confirm, override_lockout=override_lockout
+            )
+
+    async def _apply_locked(
+        self,
+        plan_id: str,
+        *,
+        confirm: bool,
+        override_lockout: bool,
     ) -> PlanApplyResult:
         if not confirm:
             raise PermissionError(

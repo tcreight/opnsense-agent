@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from opnsense_agent.safety.backup import BackupStore
+from opnsense_agent.safety.backup import BackupStore, ConfigDownloadError
 
 
 @pytest.fixture
@@ -61,6 +61,39 @@ async def test_fetch_current_xml_returns_config_text(store: BackupStore) -> None
     fake_api.get.return_value = "<opnsense><a/></opnsense>"
     xml = await store.fetch_current_xml(api=fake_api)
     assert xml == "<opnsense><a/></opnsense>"
+
+
+async def test_fetch_current_xml_dict_fallback_extracts_data_key(store: BackupStore) -> None:
+    """Some transports return a JSON dict instead of raw text; the 'data' key
+    holds the XML."""
+    fake_api = AsyncMock()
+    fake_api.get.return_value = {"data": "<opnsense><c/></opnsense>"}
+    assert await store.fetch_current_xml(api=fake_api) == "<opnsense><c/></opnsense>"
+
+
+@pytest.mark.parametrize("raw", [{"unexpected": "shape"}, {"data": ""}, ""])
+async def test_fetch_current_xml_raises_on_empty_download(
+    store: BackupStore, raw: dict[str, str] | str
+) -> None:
+    """A response shape carrying no XML must raise, never degrade to "" — an
+    empty string here would become an empty backup file, and restoring that
+    'backup' would push an empty config to the firewall."""
+    fake_api = AsyncMock()
+    fake_api.get.return_value = raw
+    with pytest.raises(ConfigDownloadError):
+        await store.fetch_current_xml(api=fake_api)
+
+
+@pytest.mark.parametrize("backup_id", ["../../../etc/passwd", "a/b", "x\\y", ""])
+async def test_backup_id_path_traversal_rejected(store: BackupStore, backup_id: str) -> None:
+    """Backup ids come from MCP tool arguments; ids that could escape the
+    backups/ directory are rejected at the single path-construction point."""
+    with pytest.raises(ValueError, match="Invalid backup id"):
+        store.read_xml(backup_id)
+    fake_api = AsyncMock()
+    with pytest.raises(ValueError, match="Invalid backup id"):
+        await store.restore(api=fake_api, backup_id=backup_id)
+    fake_api.post.assert_not_awaited()
 
 
 async def test_read_xml_round_trips_a_created_backup(store: BackupStore) -> None:

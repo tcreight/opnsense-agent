@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -8,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from opnsense_agent.plans.engine import (
+    ApplyInProgressError,
     HandlerContext,
     LockoutCheckFailedError,
     OpHandlerRegistry,
@@ -371,3 +373,87 @@ async def test_apply_restore_failure_is_still_finalized_and_audited(tmp_path: Pa
     lines = _audit_lines(tmp_path)
     assert any("status=failed" in ln for ln in lines)
     assert any("ALSO failed" in ln for ln in lines)
+
+
+# ─────────────── Concurrency: applies must be serialized ───────────────
+
+
+class _GatedRecordingHandler:
+    """Records enter/exit per op and parks on a gate until released.
+
+    Lets a test freeze the first apply mid-op: if a second concurrent apply
+    were able to interleave, its enter event would appear while the first
+    apply is still parked.
+    """
+
+    op_type = "vlan.create"
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+        self.gate = asyncio.Event()
+        self.entered = asyncio.Event()
+
+    async def execute(self, op: PlanOp, ctx: HandlerContext) -> OpResult:
+        tag = op.params["tag"]
+        self.events.append(f"enter:{tag}")
+        self.entered.set()
+        # Stays open once set, so the second apply's op passes straight through.
+        await self.gate.wait()
+        self.events.append(f"exit:{tag}")
+        return OpResult(op=op.op, status="ok")
+
+
+def _tagged_plan(plan_id: str, tag: int) -> Plan:
+    return Plan(
+        plan_id=plan_id,
+        description="test",
+        created=datetime.now(UTC),
+        target=PlanTarget(host="opnsense.test"),
+        ops=[PlanOp(op="vlan.create", params={"tag": tag, "parent_if": "igb1"})],
+    )
+
+
+async def test_concurrent_apply_fails_fast_and_retry_succeeds(tmp_path: Path) -> None:
+    """The async MCP server can dispatch two opn_plan_apply calls at once.
+    The second apply must not start (not even its backup) while the first is
+    in flight — interleaved backup/op/probe/rollback steps would be
+    catastrophic. It fails fast with ApplyInProgressError rather than
+    queueing, so the caller never mutates state it didn't preview; a retry
+    after the first apply completes succeeds normally."""
+    store = PlanStore(runs_dir=tmp_path)
+    store.save(_tagged_plan("p1", tag=1))
+    store.save(_tagged_plan("p2", tag=2))
+
+    backup = AsyncMock()
+    backup.create.return_value = "bk-1"
+
+    handler = _GatedRecordingHandler()
+    registry = OpHandlerRegistry()
+    registry.register(handler)
+
+    pipeline = _make_pipeline(
+        store=store,
+        registry=registry,
+        backup=backup,
+        probe=AsyncMock(return_value=True),
+    )
+
+    task1 = asyncio.create_task(pipeline.apply("p1", confirm=True))
+    # Wait until the first apply is inside its op, parked on the gate.
+    await handler.entered.wait()
+
+    # A concurrent apply is rejected immediately — no backup, no op started.
+    with pytest.raises(ApplyInProgressError):
+        await pipeline.apply("p2", confirm=True)
+    assert handler.events == ["enter:1"]
+    assert backup.create.await_count == 1
+
+    handler.gate.set()
+    result1 = await task1
+    assert result1.status is PlanStatus.applied
+
+    # Once the first apply has fully completed, a retry goes through.
+    result2 = await pipeline.apply("p2", confirm=True)
+    assert result2.status is PlanStatus.applied
+    assert handler.events == ["enter:1", "exit:1", "enter:2", "exit:2"]
+    assert backup.create.await_count == 2

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,6 +13,21 @@ if TYPE_CHECKING:
     from opnsense_agent.client.api import OpnApiClient
 
 logger = logging.getLogger(__name__)
+
+# Backup ids arrive from MCP tool arguments; allowlist the charset so an id can
+# only name a file inside backups/ (no path separators, no traversal). ".." is
+# not special-cased: the ".xml" suffix makes a bare ".." just an odd filename.
+_BACKUP_ID_RE = re.compile(r"[A-Za-z0-9._-]+")
+
+
+class ConfigDownloadError(Exception):
+    """Raised when the firewall's config download yields no XML.
+
+    Fail-closed: silently writing an empty backup would void the rollback
+    safety net — restoring it later would push an empty config to the firewall
+    exactly when the operator most needs the backup to be real.
+    """
+
 
 # OPNsense exposes config download at this endpoint.
 # Returns the raw config.xml as text (verified during integration test).
@@ -33,27 +49,41 @@ class BackupStore:
         self.retention = retention
         (runs_dir / "backups").mkdir(parents=True, exist_ok=True)
 
+    def _backup_path(self, backup_id: str) -> Path:
+        if not _BACKUP_ID_RE.fullmatch(backup_id):
+            raise ValueError(f"Invalid backup id: {backup_id!r}")
+        return self.runs_dir / "backups" / f"{backup_id}.xml"
+
     async def fetch_current_xml(self, api: OpnApiClient) -> str:
-        """Pull the live config.xml as text. Shared by create() and config diffs."""
+        """Pull the live config.xml as text. Shared by create() and config diffs.
+
+        Raises ConfigDownloadError instead of degrading to "" on an unexpected
+        response shape — an empty string here would become an empty backup file.
+        """
         raw: Any = await api.get(DOWNLOAD_PATH)  # type: ignore[arg-type]
-        return raw if isinstance(raw, str) else raw.get("data", "")
+        xml_text: str = raw if isinstance(raw, str) else raw.get("data", "")
+        if not xml_text:
+            raise ConfigDownloadError(f"{DOWNLOAD_PATH} returned no config XML")
+        return xml_text
 
     async def create(self, api: OpnApiClient, label: str | None = None) -> str:
         xml_text = await self.fetch_current_xml(api)
         ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         suffix = f"-{label}" if label else ""
         backup_id = f"{ts}{suffix}"
-        path = self.runs_dir / "backups" / f"{backup_id}.xml"
+        path = self._backup_path(backup_id)
         path.write_text(xml_text)
         logger.info("Backup created: %s", backup_id)
         return backup_id
 
     def read_xml(self, backup_id: str) -> str:
         """Read a stored backup's config.xml. Raises FileNotFoundError if absent."""
-        path = self.runs_dir / "backups" / f"{backup_id}.xml"
-        if not path.exists():
-            raise FileNotFoundError(f"Backup not found: {backup_id}")
-        return path.read_text()
+        # try/except instead of exists()-then-read: race-free if the file is
+        # pruned between check and read, with the same exception contract.
+        try:
+            return self._backup_path(backup_id).read_text()
+        except FileNotFoundError as e:
+            raise FileNotFoundError(f"Backup not found: {backup_id}") from e
 
     def list(self) -> list[BackupRecord]:
         records: list[BackupRecord] = []
@@ -87,9 +117,6 @@ class BackupStore:
         return len(to_delete)
 
     async def restore(self, api: OpnApiClient, backup_id: str) -> None:
-        path = self.runs_dir / "backups" / f"{backup_id}.xml"
-        if not path.exists():
-            raise FileNotFoundError(f"Backup not found: {backup_id}")
-        xml_text = path.read_text()
+        xml_text = self.read_xml(backup_id)
         await api.post(RESTORE_PATH, json={"data": xml_text})
         logger.info("Backup restored: %s", backup_id)
