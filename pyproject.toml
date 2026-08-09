@@ -40,6 +40,9 @@ where = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# ruff >= 0.16 formats Python code blocks inside markdown. Plan/spec docs
+# carry historical snippets that must stay verbatim, so exclude all .md.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "T20", "RET", "SIM"]
