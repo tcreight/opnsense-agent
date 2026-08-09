@@ -177,6 +177,21 @@ trust model ever changes (e.g. diffing configs from an untrusted source).
 This rationale is documented at the parse site in `diff.py` and called out in
 the README's safety/architecture section.
 
+### Secret redaction (added 2026-08-08)
+
+`config.xml` carries live credentials (user password hashes, IPsec/WireGuard
+PSKs and private keys, API/RADIUS secrets, LDAP bind passwords, TLS private
+keys). The diff redacts secret leaf **values** by default: a leaf whose tag
+name matches a case-insensitive secret set (or ends in
+`password`/`passwd`/`passphrase`/`secret`/`psk`/`privatekey`-style suffixes)
+renders as `[redacted]` in both the rendered text and the structured `Change`
+lists — redaction happens at `Change`-construction time so no unredacted copy
+exists. Paths/tags are never redacted, so the diff still reports *that* a
+secret changed. Public keys (`pubkey`/`publickey`) are deliberately not
+redacted. The set is generous on purpose: a false-positive redaction is
+harmless, a leaked PSK is not. `diff_config_xml(..., redact_secrets=False)` is
+a library-level escape hatch only; the MCP tool always redacts.
+
 ## Error handling
 
 - Malformed or empty XML on either side → raise `ConfigError` (from

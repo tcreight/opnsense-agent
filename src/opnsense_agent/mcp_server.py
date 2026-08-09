@@ -69,7 +69,7 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
     "opn_backup_create": "Pull config.xml and save with a timestamp + optional label.",
     "opn_backup_list": "List saved backups with timestamps and labels.",
     "opn_backup_restore": "Restore a backup. Two-step: requires confirm=true.",
-    "opn_config_diff": "Diff two backups, or backup vs. current config.",
+    "opn_config_diff": "Diff two backups, or backup vs. current config. Secret values redacted.",
     "opn_plan_save": "Validate and persist a plan YAML. Returns plan_id.",
     "opn_plan_load": "Load a saved plan by id.",
     "opn_plan_list": "List saved plans with their statuses.",
@@ -227,7 +227,12 @@ async def _dispatch(
     if name == "opn_backup_restore":
         if not args.get("confirm", False):
             return "REJECTED: opn_backup_restore requires confirm=true."
-        await backup.restore(api=api, backup_id=args["backup_id"])
+        # A manual restore is a config mutation too: refuse to interleave with
+        # (or queue behind) an in-flight plan apply.
+        if pipeline.mutation_lock.locked():
+            return "REJECTED: an apply or restore is already in progress; retry when it completes."
+        async with pipeline.mutation_lock:
+            await backup.restore(api=api, backup_id=args["backup_id"])
         return {"status": "restored", "backup_id": args["backup_id"]}
 
     if name == "opn_config_diff":
@@ -242,8 +247,8 @@ async def _dispatch(
         else:
             baseline_xml = await backup.fetch_current_xml(api)
             from_label, to_label = "current", f"backup {target_id}"
-        diff = diff_config_xml(baseline_xml, target_xml)
-        return diff.render(from_label=from_label, to_label=to_label)
+        config_diff = diff_config_xml(baseline_xml, target_xml)
+        return config_diff.render(from_label=from_label, to_label=to_label)
 
     if name == "opn_plan_save":
         plan = Plan.model_validate(yaml.safe_load(args["plan_yaml"]))

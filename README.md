@@ -156,6 +156,9 @@ Quick summary:
 - Plan files become 0444 (immutable) once a plan transitions out of `draft`
 - Auto-rollback on op failure or post-apply reachability failure
 - Manual `/opn-rollback` always available
+- `opn_config_diff` redacts secret values (passwords, PSKs, private keys, API
+  secrets, and anything tag-named like one) from its output by default —
+  changed secrets show as `[redacted]`, but the changed path is still reported
 - `opn_config_diff` parses `config.xml` with the standard-library
   `xml.etree.ElementTree`. This is a deliberate zero-dependency choice: the
   input is our own firewall's config (no DTDs/entities), fetched over
